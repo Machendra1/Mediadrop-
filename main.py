@@ -106,11 +106,11 @@ async def get_info(url: str = Query(..., description="URL media")):
             "type": "video"
         })
 
-    # Video-only + audio merge (yt-dlp best)
+    # Video-only + audio merge (format bestvideo+bestaudio)
     if not qualities:
         video_only = [f for f in formats if f.get("vcodec") != "none" and f.get("height")]
         video_only.sort(key=lambda f: f.get("height", 0), reverse=True)
-        for f in video_only[:4]:
+        for f in video_only[:5]:
             h = f.get("height")
             label = f"{h}p"
             if label in seen: continue
@@ -122,6 +122,28 @@ async def get_info(url: str = Query(..., description="URL media")):
                 "size": format_size(f.get("filesize") or f.get("filesize_approx")),
                 "type": "video"
             })
+    else:
+        # Tambahkan format merge untuk video-only streams (YouTube 1080p+)
+        video_only = [f for f in formats if f.get("vcodec") != "none" and f.get("acodec") == "none" and f.get("height")]
+        video_only.sort(key=lambda f: f.get("height", 0), reverse=True)
+        extra_seen = set(q["label"] for q in qualities)
+        for f in video_only[:3]:
+            h = f.get("height")
+            label = f"{h}p"
+            if label in extra_seen: continue
+            extra_seen.add(label)
+            qualities.insert(0, {
+                "label": label,
+                "format_id": f"bestvideo[height<={h}]+bestaudio/best[height<={h}]",
+                "ext": "MP4",
+                "size": format_size(f.get("filesize") or f.get("filesize_approx")),
+                "type": "video"
+            })
+        # Sort by resolution descending
+        def res_key(q):
+            try: return int(q["label"].replace("p",""))
+            except: return 0
+        qualities.sort(key=res_key, reverse=True)
 
     # Audio only
     audio_fmts = [f for f in formats if f.get("vcodec") == "none" and f.get("acodec") != "none"]
@@ -174,6 +196,7 @@ async def download_media(
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "ffmpeg_location": "/usr/bin/ffmpeg",
     }
 
     if audio_only or format_id == "MP3":
@@ -183,10 +206,16 @@ async def download_media(
             "outtmpl": "/tmp/%(id)s.%(ext)s",
         })
     else:
+        # Gunakan format_id jika spesifik, fallback ke best merge
+        fmt = format_id if format_id not in ["best", ""] else "bestvideo+bestaudio/best"
         ydl_opts.update({
-            "format": format_id if format_id != "best" else "bestvideo+bestaudio/best",
+            "format": fmt,
             "merge_output_format": "mp4",
             "outtmpl": "/tmp/%(id)s.%(ext)s",
+            "postprocessors": [{
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4",
+            }],
         })
 
     try:
